@@ -1,9 +1,78 @@
 import numpy as np
-from tensorflow.python.keras.utils import Sequence, to_categorical
-from tensorflow.python.keras.preprocessing.sequence import pad_sequences
+import six
 
+def pad_sequences(sequences, maxlen=None, dtype='int32',
+                  padding='pre', truncating='pre', value=0.):
+    if not hasattr(sequences, '__len__'):
+        raise ValueError('`sequences` must be iterable.')
+    lengths = []
+    for x in sequences:
+        if not hasattr(x, '__len__'):
+            raise ValueError('`sequences` must be a list of iterables. '
+                             'Found non-iterable: ' + str(x))
+        lengths.append(len(x))
 
-class EchoData(Sequence):
+    num_samples = len(sequences)
+    if maxlen is None:
+        maxlen = np.max(lengths)
+
+    # take the sample shape from the first non empty sequence
+    # checking for consistency in the main loop below.
+    sample_shape = tuple()
+    for s in sequences:
+        if len(s) > 0:
+            sample_shape = np.asarray(s).shape[1:]
+            break
+
+    is_dtype_str = np.issubdtype(dtype, np.str_) or np.issubdtype(dtype, np.unicode_)
+    if isinstance(value, six.string_types) and dtype != object and not is_dtype_str:
+        raise ValueError("`dtype` {} is not compatible with `value`'s type: {}\n"
+                         "You should set `dtype=object` for variable length strings."
+                         .format(dtype, type(value)))
+
+    x = np.full((num_samples, maxlen) + sample_shape, value, dtype=dtype)
+    for idx, s in enumerate(sequences):
+        if not len(s):
+            continue  # empty list/array was found
+        if truncating == 'pre':
+            trunc = s[-maxlen:]
+        elif truncating == 'post':
+            trunc = s[:maxlen]
+        else:
+            raise ValueError('Truncating type "%s" '
+                             'not understood' % truncating)
+
+        # check `trunc` has expected shape
+        trunc = np.asarray(trunc, dtype=dtype)
+        if trunc.shape[1:] != sample_shape:
+            raise ValueError('Shape of sample %s of sequence at position %s '
+                             'is different from expected shape %s' %
+                             (trunc.shape[1:], idx, sample_shape))
+
+        if padding == 'post':
+            x[idx, :len(trunc)] = trunc
+        elif padding == 'pre':
+            x[idx, -len(trunc):] = trunc
+        else:
+            raise ValueError('Padding type "%s" not understood' % padding)
+    return x
+
+def to_categorical(y, num_classes=None, dtype='float32'):
+    y = np.array(y, dtype='int')
+    input_shape = y.shape
+    if input_shape and input_shape[-1] == 1 and len(input_shape) > 1:
+        input_shape = tuple(input_shape[:-1])
+    y = y.ravel()
+    if not num_classes:
+        num_classes = np.max(y) + 1
+    n = y.shape[0]
+    categorical = np.zeros((n, num_classes), dtype=dtype)
+    categorical[np.arange(n), y] = 1
+    output_shape = input_shape + (num_classes,)
+    categorical = np.reshape(categorical, output_shape)
+    return categorical
+
+class EchoData():
 
     def __init__(self, series_length=40000, batch_size=32,
                  echo_step=3, truncated_length=10, seed=None):
@@ -16,10 +85,10 @@ class EchoData(Sequence):
         self.batch_size = batch_size
         if seed is not None:
             np.random.seed(seed)
-        self.raw_x = None
-        self.raw_y = None
-        self.x_batches = []
-        self.y_batches = []
+        self.x_batch = None
+        self.y_batch = None
+        self.x_chunks = []
+        self.y_chunks = []
         self.generate_new_series()
         self.prepare_batches()
 
@@ -27,7 +96,7 @@ class EchoData(Sequence):
         if index == 0:
             self.generate_new_series()
             self.prepare_batches()
-        return self.x_batches[index], self.y_batches[index]
+        return self.x_chunks[index], self.y_chunks[index]
 
     def __len__(self):
         return self.n_batches
@@ -39,17 +108,16 @@ class EchoData(Sequence):
             p=[0.5, 0.5])
         y = np.roll(x, self.echo_step, axis=1)
         y[:, 0:self.echo_step] = 0
-        self.raw_x = x
-        self.raw_y = y
+        self.x_batch = x
+        self.y_batch = y
 
     def prepare_batches(self):
-        x = np.expand_dims(self.raw_x, axis=-1)
-        y = np.expand_dims(self.raw_y, axis=-1)
-        self.x_batches = np.split(x, self.n_batches, axis=1)
-        self.y_batches = np.split(y, self.n_batches, axis=1)
+        x = np.expand_dims(self.x_batch, axis=-1)
+        y = np.expand_dims(self.y_batch, axis=-1)
+        self.x_chunks = np.split(x, self.n_batches, axis=1)
+        self.y_chunks = np.split(y, self.n_batches, axis=1)
 
-
-class TemporalOrderExp6aSequence(Sequence):
+class TemporalOrderExp6aSequence():
     """
     From Hochreiter&Schmidhuber(1997):
 
@@ -194,3 +262,4 @@ class TemporalOrderExp6aSequence(Sequence):
             t2_range = (250, 291)
         return TemporalOrderExp6aSequence(length_range, t1_range, t2_range,
                                           batch_size, seed)
+    
